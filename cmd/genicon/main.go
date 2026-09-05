@@ -81,9 +81,19 @@ func inGlyph(x, y float64) bool {
 
 // render 把图标光栅化为 size×size 的直通透明像素。
 func render(size int) *image.NRGBA {
+	return renderPWA(size, false)
+}
+
+// renderPWA 在 render 基础上支持 maskable 变体：
+// 背景铺满整个画布（Android 自行裁圆角），字形向中心缩小到 85% 以满足安全区。
+func renderPWA(size int, maskable bool) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
 	scale := canvas / float64(size)
 	n := float64(superSample * superSample)
+	glyphScale, bgFull := 1.0, false
+	if maskable {
+		glyphScale, bgFull = 0.85, true
+	}
 	for py := 0; py < size; py++ {
 		for px := 0; px < size; px++ {
 			cov, white := 0.0, 0.0
@@ -91,11 +101,20 @@ func render(size int) *image.NRGBA {
 				for sx := 0; sx < superSample; sx++ {
 					x := (float64(px) + (float64(sx)+0.5)/superSample) * scale
 					y := (float64(py) + (float64(sy)+0.5)/superSample) * scale
-					if !roundRectContains(x, y) {
+					inside := roundRectContains(x, y)
+					if bgFull {
+						inside = x >= 0 && x < canvas && y >= 0 && y < canvas
+					}
+					if !inside {
 						continue
 					}
 					cov++
-					if inGlyph(x, y) {
+					gx, gy := x, y
+					if glyphScale != 1.0 {
+						gx = canvas/2 + (x-canvas/2)/glyphScale
+						gy = canvas/2 + (y-canvas/2)/glyphScale
+					}
+					if inGlyph(gx, gy) {
 						white++
 					}
 				}
@@ -169,5 +188,32 @@ func main() {
 	}
 	writePng("icon.png", 256)
 	writePng("icon16.png", 16)
+
+	// PWA/安卓图标：写入 frontend/public/icons/，随前端构建进入 dist 并被 go:embed 内嵌
+	pwaDir, err := filepath.Abs(filepath.Join("frontend", "public", "icons"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := os.MkdirAll(pwaDir, 0o755); err != nil {
+		log.Fatalf("创建 PWA 图标目录失败: %v", err)
+	}
+	pwaIcons := []struct {
+		name     string
+		size     int
+		maskable bool
+	}{
+		{"icon-192.png", 192, false},
+		{"icon-512.png", 512, false},
+		{"maskable-192.png", 192, true},
+		{"maskable-512.png", 512, true},
+		{"apple-touch-icon.png", 180, true},
+	}
+	for _, ic := range pwaIcons {
+		p := filepath.Join(pwaDir, ic.name)
+		if err := os.WriteFile(p, pngBytes(renderPWA(ic.size, ic.maskable)), 0o644); err != nil {
+			log.Fatalf("写入 %s 失败: %v", ic.name, err)
+		}
+		fmt.Printf("已生成 PWA 图标 %s\n", p)
+	}
 	fmt.Println("图标已生成:", out)
 }

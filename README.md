@@ -21,6 +21,9 @@
 | 局域网通话 | 双方运行 exe，首页「附近的设备」点击即呼 |
 | 跨网通话 | 一方「创建新通话」→ 邀请码私聊发给对方 → 对方粘贴并回传回复码 |
 | 手机参与 | 电脑运行 `mini-vedio.exe serve`，手机浏览器（同 WiFi）打开打印的地址，加载后切蜂窝流量即可跨网通话 |
+| 手机装成 App | 前端已 PWA 化：托管 `frontend/dist` 后手机浏览器「添加到主屏幕」即可全屏使用；可再用 PWA/TWA 打包成 APK（见 [docs/android-packaging.md](docs/android-packaging.md)） |
+
+> 手机端（浏览器/PWA/APK）没有局域网自动发现（浏览器无 UDP 权限），跨网通话走邀请码模式。
 
 > 首次运行如出现 Windows 防火墙提示，请允许（局域网发现需要 UDP）。
 
@@ -35,7 +38,7 @@ powershell -File scripts\build.ps1     # 前端 + exe + 体积断言
 图标或版本信息变更后：
 
 ```powershell
-go run ./cmd/genicon                   # 由 build/windows/icon.svg 生成 icon.ico
+go run ./cmd/genicon                   # 生成 icon.ico，并同步生成 frontend/public/icons/ 下的 PWA/安卓图标
 # 发布构建会自动使用 go-winres patch 注入图标、版本和 manifest
 ```
 

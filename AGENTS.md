@@ -49,7 +49,7 @@
 | 语言/工具链 | **Go 1.26**（本机已装，增量磁盘 ≈ 0） | 静态编译出单文件 exe；编译快；工具链最省盘 |
 | 桌面壳 | **Wails v3（Beta，锁定具体版本）** | Windows 下纯 Go 无 CGO；前端资源内嵌；提供 `Permissions` API 显式管理摄像头/麦克风权限；官方称桌面 API 已稳定 |
 | 媒体引擎 | **WebView2（Chromium）内置 WebRTC 栈** | 核心决策，见下框 |
-| 前端 | Vue 3 + TypeScript + Vite + Tailwind CSS v4 + lucide-vue-next（用户指定） | 组件化与类型安全；构建产物 `frontend/dist/` 由 Wails 内嵌 |
+| 前端 | Vue 3 + TypeScript + Vite + Tailwind CSS v4 + lucide-vue-next（用户指定） | 组件化与类型安全；构建产物 `frontend/dist/` 由 Wails 内嵌；已 PWA 化（manifest + SW + 图标，见 §4.4），浏览器端可安装为应用并支持 TWA 打包 APK |
 | NAT 穿透 | 公共 STUN（默认，可配置）+ 可选 TURN（设置页填写） | 覆盖大多数场景；TURN 兜底对称 NAT |
 | 局域网发现 | UDP 广播（JSON 心跳报文） | 无服务器、双击即见对方 |
 | 信令 | ① LAN UDP 单播 ② 邀请码（带外人工传递） ③ 可选 `signal` 服务器模式（同一个 exe） | 三种模式共用一套 `SignalMessage` JSON 格式 |
@@ -64,6 +64,16 @@
 > 媒体加密由 WebRTC 规范强制保证。
 > 代价（已接受）：依赖 WebView2 运行时（Win10/11 基本预装，启动时检测并提示官方安装器）；
 > 未来移植 Linux/macOS 需重新评估 WebKit 的采集权限问题（见 §9 Backlog）。
+
+### 4.4 PWA / 移动端（2026-09-05 新增）
+
+- 前端 PWA 化：`frontend/public/`（manifest.webmanifest、sw.js、icons/）。SW 仅在浏览器安全上下文
+  （HTTPS 或 localhost）且非桌面壳内注册（`main.ts` 守卫 + `pwa.sw.*` 诊断事件），桌面 exe 路径零影响。
+- vite `base: './'` 相对路径，便于托管到任意子路径（GitHub Pages 等）。
+- 安卓打包走 PWA + TWA（Trusted Web Activity）：APK 构建推荐线上 PWABuilder（本机零工具链）；
+  本地 bubblewrap 需 JDK+SDK 3–4 GB，受 C4 约束默认不做。步骤见 docs/android-packaging.md。
+- **移动端能力边界**：浏览器/TWA 无 UDP 权限 → 无局域网自动发现；信令仅邀请码模式；
+  Wails v3 不支持 Android，安卓系统 WebView 不能替代（getUserMedia 受限）——不要提议原生壳方案。
 
 ### 4.2 被否决的方案（勿再提）
 
@@ -157,10 +167,12 @@ mini-vedio/
 ├── cmd/genicon/         # 构建期图标生成器（由 icon.svg 光栅化出 ICO/PNG，零依赖）
 ├── winres/              # go-winres 配置（图标 PNG/版本信息/manifest）
 ├── scripts/build.ps1    # 发布构建：前端 → exe → go-winres patch → 体积断言
+├── docs/                # android-packaging.md（PWA+TWA 安卓打包指南）等文档
 ├── build/windows/       # icon.svg（设计源）/ icon.ico / icon.png
 ├── frontend/            # Vue 3 + Vite 前端（node_modules 仅限此目录）
 │   ├── src/components/  # 通话、记录、联系人、PeerList、IncomingCall 与移动端导航
 │   ├── src/services/    # call.ts（状态机）/ invite.ts / diagnostics.ts / history.ts / contacts.ts
+│   ├── public/          # PWA 资源（manifest.webmanifest / sw.js / icons/），genicon 同步生成图标
 │   └── dist/            # 构建产物，go:embed 内嵌
 └── bin/                 # 构建输出 mini-vedio.exe
 ```
@@ -199,6 +211,7 @@ wails3 generate bindings -clean -d bindings
 | 里程碑 | exe 大小 | 备注 |
 |---|---|---|
 | M0–M4（Wails beta.16 + 完整前端 + LAN 服务 + 诊断日志） | 12.29 MB | `-ldflags "-s -w" -trimpath`，达标 ≤13 MB |
+| PWA 化（manifest/SW/icons 内嵌，2026-09-05） | 12.31 MB | 增量约 57 KB（图标+SW+manifest），达标 |
 
 ## 9. 里程碑（严格按序，M0 优先消灭最大技术风险）
 
@@ -232,6 +245,10 @@ Backlog（M4 之后，勿提前实现）：DataChannel 文件传输、多方 mes
 > - 2026-09-05 黑屏修复：摄像头关闭时视频位显示占位头像（此前显示被禁用轨道的黑帧，放大后即满屏黑）；
 >   小窗在等待/任何状态下保持可渲染（修复互换后小窗消失无法切回的陷阱）；视频元素 srcObject 变更后
 >   追加 play() 兜底。
+> - 2026-09-05 晚 PWA 化：前端新增 manifest/SW/图标（frontend/public/，genicon 同步输出），
+>   SW 仅浏览器安全上下文注册（桌面路径零影响）；vite base 改相对路径；exe 12.29→12.31 MB。
+>   移动端路线定为 PWA + TWA（§4.4），安卓打包文档见 docs/android-packaging.md；APK 实际构建
+>   待前端托管到 HTTPS 后由 PWABuilder 完成。
 > - 剩余：跨设备真机实测（局域网 + 跨网）、signal 中继模式（对称 NAT 兜底）、代码签名（可选）。
 
 ## 10. 测试矩阵（M4 验收）

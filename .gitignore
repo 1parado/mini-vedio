@@ -1,0 +1,34 @@
+# 依赖与构建产物
+node_modules/
+dist/
+bin/
+
+# 环境与本地配置
+*.local
+.env
+.env.*
+
+# 证书与私钥（serve 模式自签证书；正式位置在 %APPDATA%\mini-vedio\，
+# 此处防止未来误生成到仓库内）
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+
+# AI 工作区记忆（会话日志，非项目源码）
+.workbuddy/
+
+# 测试/调试产物（截图可能含通话画面、人脸或邀请码）
+.playwright-cli/
+
+# Agent 会话临时工作文档（工具自动生成，非项目源码）
+/notes.md
+/task_plan.md
+
+# go-winres 中间产物（patch 时从 exe 提取的图标组，文件名为 #<id>_<lang>.ico）
+winres/#*_*.ico
+
+# 临时与日志
+*.tmp
+*.log

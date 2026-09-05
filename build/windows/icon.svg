@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- mini-vedio 项目图标：极简黑色圆角方块 + 白色视频摄像机（与界面 Logo 同形） -->
+  <rect width="512" height="512" rx="115" fill="#111111"/>
+  <rect x="43" y="128" width="299" height="256" rx="43" fill="#ffffff"/>
+  <path d="M341 256 L469 171 V341 Z" fill="#ffffff"/>
+</svg>

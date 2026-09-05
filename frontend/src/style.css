@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+/* 设计令牌：极简单色系 + 克制的蓝色主操作 */
+@theme {
+  --color-ink: #111111;
+  --color-ink-2: #666666;
+  --color-ink-3: #9b9b9b;
+  --color-line: #e5e5e5;
+  --color-hover: #f7f7f7;
+  --color-accent: #2563eb;
+  --color-accent-strong: #1d4ed8;
+  --color-danger: #dc2626;
+  --color-ok: #16a34a;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+
+  --shadow-soft: 0 1px 2px rgb(17 17 17 / 0.04), 0 2px 8px rgb(17 17 17 / 0.05);
+  --shadow-float: 0 8px 28px rgb(17 17 17 / 0.14);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  @apply bg-white font-sans text-ink antialiased;
+  overflow: hidden;
+}
+
+@layer components {
+  /* 方形图标按钮（导航/关闭等处复用，尺寸由调用处指定） */
+  .icon-btn {
+    @apply flex items-center justify-center rounded-lg text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink;
+  }
+  /* 弹出菜单项 */
+  .menu-item {
+    @apply flex h-9 w-full items-center gap-2.5 rounded-lg px-3 text-sm text-ink transition-colors duration-150 hover:bg-hover;
+  }
+}

@@ -61,6 +61,7 @@ let statusTimer: number | undefined
 let disconnectTimer: number | undefined
 let connectionTimer: number | undefined
 let joinHintTimer: number | undefined
+let iceStallTimer: number | undefined
 const MANUAL_HANDSHAKE_TIMEOUT_MS = 30 * 60 * 1000
 const WEBRTC_CONNECT_TIMEOUT_MS = 120 * 1000
 let callStartedAt = 0
@@ -180,6 +181,7 @@ function createPeer(initiator: boolean): RTCPeerConnection {
     if (s === 'connected' || s === 'completed') {
       window.clearTimeout(disconnectTimer)
       window.clearTimeout(connectionTimer)
+      window.clearTimeout(iceStallTimer)
       phase.value = 'connected'
       logDiagnostic('webrtc.ice.connected', `state=${s}`)
       inviteCode.value = ''
@@ -209,9 +211,19 @@ function createPeer(initiator: boolean): RTCPeerConnection {
       } else {
         logDiagnostic(
           'webrtc.ice.disconnected',
-          `phase=${phase.value} 建立中抖动，忽略`,
+          `phase=${phase.value} 建立中抖动，10s 未恢复将按打洞失败处理`,
           'warn',
         )
+        // 建连中断连且迟迟不恢复：快速给出可读的打洞失败提示，不再干等 120s 超时
+        window.clearTimeout(iceStallTimer)
+        iceStallTimer = window.setTimeout(() => {
+          if (pc && pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
+            endCall(
+              'P2P 打洞失败：双方候选无法互通（常见于对称 NAT、运营商拦截 UDP 或路由器 AP 隔离）。可尝试两台设备用同一 WiFi，或在设置页配置 TURN 中继',
+              false,
+            )
+          }
+        }, 10_000)
       }
     }
   }
@@ -540,6 +552,7 @@ function endCall(reason = '', notifyPeer = true): void {
   window.clearTimeout(disconnectTimer)
   window.clearTimeout(connectionTimer)
   window.clearTimeout(joinHintTimer)
+  window.clearTimeout(iceStallTimer)
   // 房间码模式下通知对端本端已挂断（P2 修复）：此前对端只能等 ICE disconnected 3s 兜底
   if (notifyPeer && signal && signalRoom.value) {
     try {

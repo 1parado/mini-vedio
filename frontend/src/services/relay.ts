@@ -28,7 +28,7 @@ const TOPIC_ROOT = 'mv-rtc1'
 const CONNECT_TIMEOUT_MS = 10_000
 const SUBACK_TIMEOUT_MS = 10_000
 const KEEPALIVE_SEC = 60
-const PING_INTERVAL_MS = 45_000
+const PING_INTERVAL_MS = 25_000
 const MAX_PAYLOAD_BYTES = 64 * 1024
 /** 房间码主体字母表与 signal.go newRoomCode 一致（去除易混淆字符） */
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -135,10 +135,17 @@ export class PublicRelay implements SignalingChannel {
         const view = new DataView(event.data as ArrayBuffer)
         const type = view.getUint8(0) >> 4
         if (type === 2) {
-          // CONNACK：会话建立成功，启动保活
+          // CONNACK：会话建立成功，启动保活（broker 在 1.5×keepalive 无报文即踢线，
+          // 实测应用内 25s 间隔；sendRaw 失败必须留痕，否则踢线无法归因）
           cleanup()
           window.clearInterval(this.pingTimer)
-          this.pingTimer = window.setInterval(() => this.sendRaw([0xc0, 0x00]), PING_INTERVAL_MS)
+          this.pingTimer = window.setInterval(() => {
+            try {
+              this.sendRaw([0xc0, 0x00])
+            } catch (e) {
+              logDiagnostic('relay.ping.error', e instanceof Error ? e.message : String(e), 'warn')
+            }
+          }, PING_INTERVAL_MS)
           ws.onmessage = (ev) => this.handlePacket(ev.data as ArrayBuffer)
           ws.onclose = () => this.handleClose()
           resolve()
@@ -152,11 +159,41 @@ export class PublicRelay implements SignalingChannel {
     this.stopJoinRetry()
     window.clearInterval(this.pingTimer)
     logDiagnostic('relay.connect.close', `broker=${brokerHost(this.broker)}`, 'warn')
-    // 通话中被断开：转为 error 让状态机给出可读提示
-    if (this.roomJoined) {
-      this.emit({ type: 'error', error: '公共信令中继连接已断开，请重试或改用邀请码模式' })
-    }
+    // 主动关闭（close() 已清 roomJoined）不重连；通话中被断开则自动重连恢复信令
+    if (!this.roomJoined || this.reconnecting) return
+    void this.reconnect()
   }
+
+  /** 通话中被 broker 断开：重连 + 重新订阅 + 恢复最后一帧信令，通话不中断 */
+  private async reconnect(): Promise<void> {
+    this.reconnecting = true
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        logDiagnostic('relay.reconnect.begin', `attempt=${attempt}`)
+        await this.connectBroker(this.broker)
+        await this.subscribeRoom(this.activeRoom)
+        this.reconnecting = false
+        logDiagnostic('relay.reconnect.ok', `attempt=${attempt}`)
+        if (this.createdRoom && this.lastOfferPayload) {
+          this.publish(this.lastOfferPayload)
+        } else if (!this.createdRoom && this.lastAnswerPayload) {
+          this.publish(this.lastAnswerPayload)
+        } else if (!this.createdRoom) {
+          // 还没收到 offer：重新广播 join，让创建者重发 offer
+          this.startJoinRetry()
+        }
+        return
+      } catch (e) {
+        logDiagnostic('relay.reconnect.fail', `attempt=${attempt} reason=${e instanceof Error ? e.message : String(e)}`, 'warn')
+        await new Promise((resolve) => window.setTimeout(resolve, 2000 * attempt))
+      }
+    }
+    this.reconnecting = false
+    this.roomJoined = false
+    this.emit({ type: 'error', error: '公共信令中继连接已断开且重连失败，请重试或改用邀请码模式' })
+  }
+
+  private reconnecting = false
 
   private emit(message: SignalMessage): void {
     this.listeners.forEach((listener) => listener(message))
@@ -283,8 +320,15 @@ export class PublicRelay implements SignalingChannel {
     const topic = mqttString(encodeUtf8(`${TOPIC_ROOT}/${this.activeRoom}/${this.senderId}`))
     const body = new Uint8Array([...topic, ...bytes])
     this.sendRaw([0x30, ...encodeRemainingLength(body.length), ...body])
-    logDiagnostic('relay.publish', `type=${safeType(payload)} bytes=${bytes.length}`)
+    const type = safeType(payload)
+    // offer/answer 需要可重发：断线重连后 qos0 无保留消息，对端重连前发的帧已丢
+    if (type === 'offer') this.lastOfferPayload = payload
+    else if (type === 'answer') this.lastAnswerPayload = payload
+    logDiagnostic('relay.publish', `type=${type} bytes=${bytes.length}`)
   }
+
+  private lastOfferPayload = ''
+  private lastAnswerPayload = ''
 
   private async subscribe(filter: string): Promise<void> {
     this.activeRoom = filter.split('/')[1] ?? ''
@@ -391,6 +435,7 @@ export class PublicRelay implements SignalingChannel {
   }
 
   close(): void {
+    this.roomJoined = false
     this.stopJoinRetry()
     window.clearInterval(this.pingTimer)
     this.rawListeners.clear()

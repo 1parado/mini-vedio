@@ -197,6 +197,10 @@ wails3 generate bindings -clean -d bindings
 
 # 图标设计源为 build/windows/icon.svg；变更后: go run ./cmd/genicon
 # 注意: Go 1.26 链接器不嵌入 syso 资源，图标/版本必须走 go-winres patch，勿走 syso 路线
+
+# CI 发布（.github/workflows/release.yml）：推送 v* 标签自动构建 exe（CGO_ENABLED=0）
+# 并发 GitHub Release；bindings/ 已提交，CI 无需 wails3 CLI
+git tag v0.1.1 && git push origin v0.1.1
 ```
 
 ### 8.2 体积优化清单（每次发布前逐项确认）

@@ -40,6 +40,8 @@
 powershell -File scripts\build.ps1     # 前端 + exe + 体积断言
 ```
 
+**免本地构建**：推送 `v*` 标签（如 `v0.1.1`）会触发 GitHub Actions 自动构建 exe 并发布到 [Releases](https://github.com/1parado/mini-vedio/releases)。
+
 图标或版本信息变更后：
 
 ```powershell

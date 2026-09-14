@@ -134,7 +134,7 @@ Wails v3（Beta）若出现阻塞性 bug：回退 **Wails v2**（长期稳定版
 | 媒体加密 | WebRTC 规范强制 DTLS-SRTP，不可关闭 |
 | **SAS 核对码（防信令中间人）** | 双方各算 `sha256(字典序拼接的双方 DTLS 证书指纹)` 取前 3 字节 → 6 个十六进制字符显示为 `ABC-123`；通话中常显，双方人工比对一致后点"已核实"变绿。对三种信令模式通用；指纹从本端证书与对端 SDP `a=fingerprint` 提取 |
 | 权限最小化 | Wails `Permissions` 显式配置：`Camera`、`Microphone` = Allow（请求只可能来自应用自身内嵌页面）；未列出的能力走 WebView2 原生提示。采集权限仅在进入通话界面时申请 |
-| 页面来源唯一 | 前端资源 `go:embed` 内嵌，仅加载自有来源；CSP：`default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'`；不加载任何远程内容 |
+| 页面来源唯一 | 前端资源 `go:embed` 内嵌，仅加载自有来源；CSP：`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' wss: ws://localhost:* wss://localhost:*`（信令服务器可配置任意主机，故放行 wss: 协议级；远程脚本仍被 script-src 'self' 禁止，明文 ws 仅限 localhost） |
 | 发布版加固 | release 构建禁用 devtools 与右键菜单；代码零遥测、零统计 |
 | 邀请码使用守则 | README 告知用户：邀请码/房间码只私聊发给通话对象；泄露邀请码不等于被窃听（有 SAS 兜底），但可能被陌生人呼叫 |
 | 公共中继的信任边界 | 公共 MQTT broker 只搬运 SDP/ICE 文本（不接触媒体），broker 运营方可见连接信息不破坏媒体机密性（DTLS-SRTP 端到端）；身份防伪由 SAS 核对码兜底；日志不记录 SDP/ICE 正文 |

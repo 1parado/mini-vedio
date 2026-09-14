@@ -28,7 +28,7 @@
 			"0409": {
 				"identity": {
 					"name": "mini-vedio",
-					"version": "0.1.0"
+					"version": "0.1.1"
 				},
 				"execution-level": "asInvoker",
 				"dpi-awareness": "per monitor v2",

@@ -356,10 +356,20 @@ export class PublicRelay implements SignalingChannel {
       return
     }
     if (message.type === 'join') {
-      // 加入广播会重发多次，只向上层报一次（对端重复收报会污染诊断日志）
-      if (!this.peerJoinedEmitted) {
-        this.peerJoinedEmitted = true
-        this.emit({ type: 'peer_joined' })
+      if (this.createdRoom) {
+        // 创建者：加入广播会重发多次，只向上层报一次（对端重复收报会污染诊断日志）
+        if (!this.peerJoinedEmitted) {
+          this.peerJoinedEmitted = true
+          this.emit({ type: 'peer_joined' })
+        }
+      } else if (this.roomJoined) {
+        // MQTT 无房间存在性校验：双方都点"加入"会互等死锁，必须给出可读提示
+        this.stopJoinRetry()
+        logDiagnostic('relay.join.conflict', 'both peers joined without creator', 'warn')
+        this.emit({
+          type: 'error',
+          error: '双方都选择了加入：请一端点「创建新通话」生成房间码，另一端再输入房间码加入',
+        })
       }
       return
     }

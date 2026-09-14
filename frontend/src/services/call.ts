@@ -60,6 +60,7 @@ let chatId = 0
 let statusTimer: number | undefined
 let disconnectTimer: number | undefined
 let connectionTimer: number | undefined
+let joinHintTimer: number | undefined
 const MANUAL_HANDSHAKE_TIMEOUT_MS = 30 * 60 * 1000
 const WEBRTC_CONNECT_TIMEOUT_MS = 120 * 1000
 let callStartedAt = 0
@@ -353,6 +354,8 @@ async function createSignalCall(): Promise<void> {
       await applyRemoteIce(message.ice as RTCIceCandidateInit)
     } else if (message.type === 'bye') {
       endCall('对方已挂断', false)
+    } else if (message.type === 'error') {
+      endCall(message.error || '信令通道错误', false)
     }
   })
   // 等对方加入房间再发 offer：公共中继不缓存消息，早发的 offer 对方订阅前收不到
@@ -392,11 +395,20 @@ async function joinSignalCall(code: string): Promise<void> {
       await applyRemoteIce(message.ice as RTCIceCandidateInit)
     } else if (message.type === 'bye') {
       endCall('对方已挂断', false)
+    } else if (message.type === 'error') {
+      endCall(message.error || '信令通道错误', false)
     }
   })
   signal.send({ action: 'join', room })
   await waitSignalMessage(signal, 'joined')
+  // 迟到提示：MQTT 无房间存在性校验，加入空房间只会干等（如双方都点了加入会被中继冲突检测打断）
+  joinHintTimer = window.setTimeout(() => {
+    if (phase.value === 'connecting' && role.value === 'callee') {
+      setStatus('仍无对方消息：请确认对方点击的是「创建新通话」并停留在等待界面', 'info')
+    }
+  }, 20_000)
   const offer = await offerPromise
+  window.clearTimeout(joinHintTimer)
   await peer.setRemoteDescription({ type: 'offer', sdp: offer.sdp! })
   await markRemoteReady()
   const answer = await peer.createAnswer()
@@ -527,6 +539,7 @@ function endCall(reason = '', notifyPeer = true): void {
   lanSetBusy(false)
   window.clearTimeout(disconnectTimer)
   window.clearTimeout(connectionTimer)
+  window.clearTimeout(joinHintTimer)
   // 房间码模式下通知对端本端已挂断（P2 修复）：此前对端只能等 ICE disconnected 3s 兜底
   if (notifyPeer && signal && signalRoom.value) {
     try {

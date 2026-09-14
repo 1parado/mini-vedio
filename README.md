@@ -24,7 +24,7 @@
 | 跨网通话（离线备用） | 「创建新通话」后若提示已切换邀请码模式：邀请码私聊发给对方 → 对方粘贴并回传回复码 |
 | 无公共中继网络 | 一方运行 `mini-vedio.exe signal`（同一 exe 变信令服务器），配合 `cloudflared tunnel --url http://localhost:8787` 可获得免注册公网 wss 地址，双方在设置页填写后即可使用房间码 |
 | 手机参与 | 电脑运行 `mini-vedio.exe serve`，手机浏览器（同 WiFi）打开打印的地址，加载后切蜂窝流量即可跨网通话 |
-| 手机装成 App | 前端已 PWA 化：托管 `frontend/dist` 后手机浏览器「添加到主屏幕」即可全屏使用；可再用 PWA/TWA 打包成 APK（见 [docs/android-packaging.md](docs/android-packaging.md)） |
+| 安卓 / 手机浏览器 | **在线 PWA：https://1parado.github.io/mini-vedio/** —— 手机浏览器打开，「添加到主屏幕」即可全屏使用（跨网通话走房间码）；也可用该地址在 [PWABuilder](https://www.pwabuilder.com/) 生成 APK（见 [docs/android-packaging.md](docs/android-packaging.md)） |
 
 > 手机端（浏览器/PWA/APK）没有局域网自动发现（浏览器无 UDP 权限），跨网通话走房间码或邀请码模式。
 

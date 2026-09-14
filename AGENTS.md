@@ -65,14 +65,16 @@
 > 代价（已接受）：依赖 WebView2 运行时（Win10/11 基本预装，启动时检测并提示官方安装器）；
 > 未来移植 Linux/macOS 需重新评估 WebKit 的采集权限问题（见 §9 Backlog）。
 
-### 4.4 PWA / 移动端（2026-09-05 新增）
+### 4.4 PWA / 移动端（2026-09-05 新增；2026-09-14 已托管）
 
 - 前端 PWA 化：`frontend/public/`（manifest.webmanifest、sw.js、icons/）。SW 仅在浏览器安全上下文
   （HTTPS 或 localhost）且非桌面壳内注册（`main.ts` 守卫 + `pwa.sw.*` 诊断事件），桌面 exe 路径零影响。
-- vite `base: './'` 相对路径，便于托管到任意子路径（GitHub Pages 等）。
-- 安卓打包走 PWA + TWA（Trusted Web Activity）：APK 构建推荐线上 PWABuilder（本机零工具链）；
+- vite `base: './'` 相对路径。**已托管 GitHub Pages**（`.github/workflows/pages.yml`，push frontend 变更自动部署）：
+  https://1parado.github.io/mini-vedio/ —— 安卓/手机浏览器直接打开即可「添加到主屏幕」安装 PWA；
+  Pages 端无 Go 绑定，局域网功能自动降级，跨网通话走房间码/邀请码。
+- 安卓 APK 走 PWA + TWA：用上面的 Pages 地址到线上 PWABuilder 构建（本机零工具链）；
   本地 bubblewrap 需 JDK+SDK 3–4 GB，受 C4 约束默认不做。步骤见 docs/android-packaging.md。
-- **移动端能力边界**：浏览器/TWA 无 UDP 权限 → 无局域网自动发现；信令仅邀请码模式；
+- **移动端能力边界**：浏览器/TWA 无 UDP 权限 → 无局域网自动发现；信令走房间码/邀请码；
   Wails v3 不支持 Android，安卓系统 WebView 不能替代（getUserMedia 受限）——不要提议原生壳方案。
 
 ### 4.2 被否决的方案（勿再提）

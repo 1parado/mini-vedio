@@ -6,6 +6,8 @@ import { computeSas } from './sas'
 import { logDiagnostic } from './diagnostics'
 import { addCallRecord } from './history'
 import { iceServers, loadNetworkSettings, saveNetworkSettings, type NetworkSettings } from './network'
+import { SignalConnection, waitSignalMessage, type SignalingChannel } from './signal'
+import { PublicRelay } from './relay'
 
 export interface LanPeer {
   id: string
@@ -22,7 +24,8 @@ export interface LanIncoming {
 
 // ---- 模块级单例状态：整个应用共享同一通电话 ----
 const phase = ref<CallPhase>('idle')
-const phaseDetail = ref('')
+const statusMessage = ref('')
+const statusTone = ref<'info' | 'error' | 'success'>('info')
 const role = ref<'caller' | 'callee' | null>(null)
 const localStream = ref<MediaStream | null>(null)
 const remoteStream = ref<MediaStream | null>(null)
@@ -32,7 +35,6 @@ const camOn = ref(true)
 const sharing = ref(false)
 const inviteCode = ref('')
 const replyCode = ref('')
-const notice = ref('')
 const panel = ref<'none' | 'participants' | 'chat'>('none')
 const peerName = ref('对方')
 const selfName = ref(localStorage.getItem('mv:name') ?? '本机')
@@ -48,15 +50,56 @@ const lanCallId = ref('')
 const sasCode = ref('')
 const sasVerified = ref(false)
 const networkSettings = ref(loadNetworkSettings())
+const roomCode = ref('')
+const signalRoom = ref('')
 
 let pc: RTCPeerConnection | null = null
 let channel: RTCDataChannel | null = null
 let savedVideoSender: RTCRtpSender | null = null
 let chatId = 0
-let noticeTimer: number | undefined
+let statusTimer: number | undefined
 let disconnectTimer: number | undefined
+let connectionTimer: number | undefined
+const MANUAL_HANDSHAKE_TIMEOUT_MS = 30 * 60 * 1000
+const WEBRTC_CONNECT_TIMEOUT_MS = 120 * 1000
 let callStartedAt = 0
-let callMode: 'invite' | 'lan' | null = null
+let callMode: 'invite' | 'lan' | 'signal' | null = null
+let signal: SignalingChannel | null = null
+let signalOff: (() => void) | null = null
+
+// ---- 远端 ICE 候选缓冲（P1 修复）----
+// 信令通道本身无消息缓冲：对端 trickle 的候选可能先于 answer/offer 应用到达，
+// 直接 addIceCandidate 会抛 InvalidStateError 导致候选永久丢失（ICE 候选不重传）。
+// 远端描述就绪前先入队，就绪后按序回放。
+let pendingIce: RTCIceCandidateInit[] = []
+let remoteReady = false
+
+function resetIceBuffer(): void {
+  pendingIce = []
+  remoteReady = false
+}
+
+async function applyRemoteIce(ice: RTCIceCandidateInit): Promise<void> {
+  if (!pc) return
+  if (!remoteReady) {
+    pendingIce.push(ice)
+    logDiagnostic('webrtc.ice.buffered', `queued=${pendingIce.length}`)
+    return
+  }
+  try {
+    await pc.addIceCandidate(ice)
+  } catch (e) {
+    logDiagnostic('webrtc.ice.apply.error', e instanceof Error ? e.message : String(e), 'warn')
+  }
+}
+
+async function markRemoteReady(): Promise<void> {
+  remoteReady = true
+  const queued = pendingIce
+  pendingIce = []
+  for (const ice of queued) await applyRemoteIce(ice)
+  if (queued.length) logDiagnostic('webrtc.ice.replay', `count=${queued.length}`)
+}
 
 const participants = computed<Participant[]>(() => {
   const list: Participant[] = [{ id: 'self', name: selfName.value, connected: true }]
@@ -68,15 +111,17 @@ const participants = computed<Participant[]>(() => {
 
 const inCall = computed(() => role.value !== null)
 
-function showNotice(text: string): void {
-  notice.value = text
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 5000)
+function setStatus(text: string, tone: 'info' | 'error' | 'success' = 'info'): void {
+  statusMessage.value = text
+  statusTone.value = tone
+  window.clearTimeout(statusTimer)
+  statusTimer = window.setTimeout(() => (statusMessage.value = ''), 7000)
 }
 
-function beginCall(mode: 'invite' | 'lan'): void {
+function beginCall(mode: 'invite' | 'lan' | 'signal'): void {
   callStartedAt = Date.now()
   callMode = mode
+  resetIceBuffer()
   logDiagnostic('call.begin', `mode=${mode}`)
 }
 
@@ -133,6 +178,7 @@ function createPeer(initiator: boolean): RTCPeerConnection {
     const s = peer.iceConnectionState
     if (s === 'connected' || s === 'completed') {
       window.clearTimeout(disconnectTimer)
+      window.clearTimeout(connectionTimer)
       phase.value = 'connected'
       logDiagnostic('webrtc.ice.connected', `state=${s}`)
       inviteCode.value = ''
@@ -142,23 +188,62 @@ function createPeer(initiator: boolean): RTCPeerConnection {
         (code) => (sasCode.value = code),
       )
     } else if (s === 'failed') {
+      window.clearTimeout(connectionTimer)
       phase.value = 'failed'
-      phaseDetail.value = 'P2P 连接失败，请检查网络后重新发起'
+      setStatus('P2P 连接失败，请检查网络或配置 TURN', 'error')
       logDiagnostic('webrtc.ice.failed', `state=${s}`, 'error')
     } else if (s === 'disconnected') {
-      // 对端异常退出或网络中断：给 3 秒抖动恢复窗口，超时判定断开（测试矩阵 M-8）
-      window.clearTimeout(disconnectTimer)
-      disconnectTimer = window.setTimeout(() => {
-        if (pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
-          endCall('连接已断开（对方可能已退出）', false)
-        }
-      }, 3000)
+      // 仅"已连接后"的掉线走 3 秒判定（测试矩阵 M-8）。
+      // 建连阶段（connecting）的 disconnected 只是候选暂时不可达的抖动
+      // ——对方可能还没粘贴回复码，此时挂断会杀死本可成功的通话，
+      // 由连接计时器（邀请码 30 分钟 / 信号模式 120 秒）兜底。
+      if (phase.value === 'connected') {
+        logDiagnostic('webrtc.ice.disconnected', '3s 内未恢复将判定断开', 'warn')
+        window.clearTimeout(disconnectTimer)
+        disconnectTimer = window.setTimeout(() => {
+          if (pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
+            endCall('连接已断开（对方可能已退出）', false)
+          }
+        }, 3000)
+      } else {
+        logDiagnostic(
+          'webrtc.ice.disconnected',
+          `phase=${phase.value} 建立中抖动，忽略`,
+          'warn',
+        )
+      }
     }
   }
   peer.ondatachannel = (e) => wireChannel(e.channel)
+  peer.onicecandidate = (event) => {
+    if (event.candidate && signal && signalRoom.value) {
+      signal.send({ action: 'signal', type: 'ice', ice: event.candidate.toJSON() })
+    }
+  }
   // 数据通道只能由发起方创建，加入方通过 ondatachannel 接收，避免重复协商
   if (initiator) wireChannel(peer.createDataChannel('app'))
   return peer
+}
+
+function startConnectionTimer(timeoutMs: number, reason: string): void {
+  window.clearTimeout(connectionTimer)
+  connectionTimer = window.setTimeout(() => {
+    if (pc && phase.value !== 'connected') {
+      logDiagnostic('webrtc.connect.timeout', `timeoutSec=${Math.round(timeoutMs / 1000)} reason=${reason}`, 'error')
+      endCall('连接超时，请检查信令服务器、STUN/TURN 和防火墙', false)
+    }
+  }, timeoutMs)
+  logDiagnostic('webrtc.connect.timer', `timeoutSec=${Math.round(timeoutMs / 1000)} reason=${reason}`)
+}
+
+/** 候选地址统计：srflx 数量决定跨网能否打通，host 仅限同网段 */
+function candidateStats(peer: RTCPeerConnection): string {
+  const sdp = peer.localDescription?.sdp ?? ''
+  const cands = sdp.split(/\r?\n/).filter((l) => l.startsWith('a=candidate:'))
+  const host = cands.filter((l) => l.includes('typ host')).length
+  const srflx = cands.filter((l) => l.includes('typ srflx')).length
+  const relay = cands.filter((l) => l.includes('typ relay')).length
+  return `total=${cands.length} host=${host} srflx=${srflx} relay=${relay} sdpLen=${sdp.length}`
 }
 
 /** 非 trickle ICE：等待候选收集完成（超时兜底），保证邀请码自包含 */
@@ -168,12 +253,13 @@ function gatheringComplete(peer: RTCPeerConnection): Promise<void> {
     const done = () => {
       peer.removeEventListener('icegatheringstatechange', onChange)
       window.clearTimeout(timer)
+      logDiagnostic('webrtc.gather', candidateStats(peer))
       resolve()
     }
     const onChange = () => {
       if (peer.iceGatheringState === 'complete') done()
     }
-    const timer = window.setTimeout(done, 4000)
+    const timer = window.setTimeout(done, 15000)
     peer.addEventListener('icegatheringstatechange', onChange)
   })
 }
@@ -187,13 +273,13 @@ async function ensureMedia(): Promise<void> {
     logDiagnostic('media.video.failed', 'falling back to audio', 'warn')
     try {
       localStream.value = await navigator.mediaDevices.getUserMedia({ audio: true })
-      showNotice('摄像头不可用，已切换为纯语音')
+      setStatus('摄像头不可用，已切换为纯语音')
     } catch (e) {
       const name = (e as DOMException)?.name
       if (name === 'NotAllowedError') {
-        showNotice('无法访问摄像头/麦克风：请检查 Windows 设置 → 隐私 → 相机/麦克风')
+        setStatus('无法访问摄像头/麦克风：请检查 Windows 设置 → 隐私 → 相机/麦克风', 'error')
       } else {
-        showNotice('未找到可用的摄像头/麦克风，将以只收模式加入')
+        setStatus('未找到可用的摄像头/麦克风，将以只收模式加入')
       }
       logDiagnostic('media.audio.failed', `error=${name || 'unknown'}`, 'warn')
     }
@@ -203,12 +289,25 @@ async function ensureMedia(): Promise<void> {
   camOn.value = !!s && s.getVideoTracks().length > 0
 }
 
-/** 发起方：生成本端邀请码，等待对方回传回复码 */
+/** 发起方：默认走房间码模式（公共中继或自建信令），中继不可达时回退邀请码 */
 async function createCall(): Promise<void> {
   if (pc) return
   role.value = 'caller'
   peerName.value = '对方'
   lanSetBusy(true)
+  try {
+    await createSignalCall()
+    return
+  } catch (e) {
+    logDiagnostic('signal.create.error', e instanceof Error ? e.message : String(e), 'error')
+    if (networkSettings.value.signalUrl) {
+      // 自建服务器不可达：明确报错，不做静默降级
+      endCall('信令房间创建失败，请检查服务器地址', false)
+      throw e
+    }
+    // 公共中继不可达：自动回退邀请码模式（无需服务器的离线路径）
+    endCall('公共信令中继不可用，已切换为邀请码模式', false)
+  }
   beginCall('invite')
   try {
     await ensureMedia()
@@ -218,12 +317,92 @@ async function createCall(): Promise<void> {
     await peer.setLocalDescription(offer)
     await gatheringComplete(peer)
     inviteCode.value = await encodeInvite('o', peer.localDescription!.sdp)
+    startConnectionTimer(MANUAL_HANDSHAKE_TIMEOUT_MS, 'manual-offer-waiting')
     logDiagnostic('invite.offer.ready', `sdpBytes=${peer.localDescription?.sdp.length ?? 0}`)
   } catch (e) {
     logDiagnostic('invite.offer.error', e instanceof Error ? e.message : String(e), 'error')
     endCall('创建通话失败', false)
     throw e
   }
+}
+
+async function createSignalCall(): Promise<void> {
+  role.value = 'caller'
+  peerName.value = '对方'
+  lanSetBusy(true)
+  beginCall('signal')
+  phase.value = 'connecting'
+  signal = newSignalChannel()
+  await signal.connect(networkSettings.value.signalUrl)
+  // error 事件会同时打断多个等待中的 Promise，提前挂上 catch 避免 unhandled rejection
+  const peerJoined = waitSignalMessage(signal, 'peer_joined', MANUAL_HANDSHAKE_TIMEOUT_MS)
+  peerJoined.catch(() => {})
+  signal.send({ action: 'create' })
+  const createdMessage = await waitSignalMessage(signal, 'created')
+  signalRoom.value = createdMessage.room ?? ''
+  roomCode.value = `MV2-${signalRoom.value}`
+  await ensureMedia()
+  const peer = createPeer(true)
+  pc = peer
+  signalOff = signal.onMessage(async (message) => {
+    if (message.type === 'answer' && message.sdp && pc) {
+      await pc.setRemoteDescription({ type: 'answer', sdp: message.sdp })
+      await markRemoteReady()
+      startConnectionTimer(WEBRTC_CONNECT_TIMEOUT_MS, 'signal-answer-received')
+    } else if (message.type === 'ice' && message.ice && pc) {
+      await applyRemoteIce(message.ice as RTCIceCandidateInit)
+    } else if (message.type === 'bye') {
+      endCall('对方已挂断', false)
+    }
+  })
+  // 等对方加入房间再发 offer：公共中继不缓存消息，早发的 offer 对方订阅前收不到
+  await peerJoined
+  const offer = await peer.createOffer()
+  await peer.setLocalDescription(offer)
+  signal.send({ action: 'signal', type: 'offer', sdp: offer.sdp })
+  startConnectionTimer(WEBRTC_CONNECT_TIMEOUT_MS, 'signal-offer-sent')
+}
+
+/** 自建信令服务器优先，未配置时使用内置公共中继（无需自己的服务器） */
+function newSignalChannel(): SignalingChannel {
+  if (networkSettings.value.signalUrl) return new SignalConnection()
+  return new PublicRelay()
+}
+
+async function joinSignalCall(code: string): Promise<void> {
+  const room = code.trim().toUpperCase().replace(/^MV2-/, '')
+  if (!/^[A-Z2-9]{6}$/.test(room)) throw new Error('房间码应为 6 位字符')
+  role.value = 'callee'
+  peerName.value = '对方'
+  lanSetBusy(true)
+  beginCall('signal')
+  phase.value = 'connecting'
+  signal = newSignalChannel()
+  await signal.connect(networkSettings.value.signalUrl)
+  signalRoom.value = room
+  roomCode.value = `MV2-${room}`
+  await ensureMedia()
+  const peer = createPeer(false)
+  pc = peer
+  const offerPromise = waitSignalMessage(signal, 'offer', MANUAL_HANDSHAKE_TIMEOUT_MS)
+  offerPromise.catch(() => {})
+  // 主消息处理器先于 join 注册：对端在 offer 后立即 trickle 的候选不能丢（P1 修复）
+  signalOff = signal.onMessage(async (message) => {
+    if (message.type === 'ice' && message.ice && pc) {
+      await applyRemoteIce(message.ice as RTCIceCandidateInit)
+    } else if (message.type === 'bye') {
+      endCall('对方已挂断', false)
+    }
+  })
+  signal.send({ action: 'join', room })
+  await waitSignalMessage(signal, 'joined')
+  const offer = await offerPromise
+  await peer.setRemoteDescription({ type: 'offer', sdp: offer.sdp! })
+  await markRemoteReady()
+  const answer = await peer.createAnswer()
+  await peer.setLocalDescription(answer)
+  signal.send({ action: 'signal', type: 'answer', sdp: answer.sdp })
+  startConnectionTimer(WEBRTC_CONNECT_TIMEOUT_MS, 'signal-answer-sent')
 }
 
 /** 发起方：粘贴对方的回复码后开始建连 */
@@ -234,6 +413,7 @@ async function acceptReplyCode(code: string): Promise<void> {
   phase.value = 'connecting'
   try {
     await pc.setRemoteDescription({ type: 'answer', sdp: parsed.sdp })
+    startConnectionTimer(WEBRTC_CONNECT_TIMEOUT_MS, 'manual-answer-received')
     logDiagnostic('invite.answer.accepted', `sdpBytes=${parsed.sdp.length}`)
   } catch (e) {
     logDiagnostic('invite.answer.error', e instanceof Error ? e.message : String(e), 'error')
@@ -242,8 +422,19 @@ async function acceptReplyCode(code: string): Promise<void> {
   }
 }
 
-/** 加入方：粘贴对方邀请码，生成需要回传的回复码 */
+/** 加入方：粘贴对方邀请码或 6 位房间码 */
 async function joinWithInvite(code: string): Promise<void> {
+  if (/^(?:MV2-)?[A-Z2-9]{6}$/i.test(code.trim())) {
+    // 房间码：默认公共中继，未配置自建服务器也可直通
+    try {
+      await joinSignalCall(code)
+    } catch (e) {
+      logDiagnostic('signal.join.error', e instanceof Error ? e.message : String(e), 'error')
+      endCall('加入信令房间失败，请检查房间码和网络', false)
+      throw e
+    }
+    return
+  }
   if (pc) return
   const parsed = await decodeInvite(code)
   if (parsed.kind !== 'o') throw new Error('请粘贴对方发起通话生成的邀请码')
@@ -261,6 +452,7 @@ async function joinWithInvite(code: string): Promise<void> {
     await peer.setLocalDescription(answer)
     await gatheringComplete(peer)
     replyCode.value = await encodeInvite('a', peer.localDescription!.sdp)
+    startConnectionTimer(MANUAL_HANDSHAKE_TIMEOUT_MS, 'manual-answer-waiting')
     logDiagnostic('invite.answer.ready', `sdpBytes=${peer.localDescription?.sdp.length ?? 0}`)
   } catch (e) {
     logDiagnostic('invite.answer.error', e instanceof Error ? e.message : String(e), 'error')
@@ -290,7 +482,7 @@ async function toggleShare(): Promise<void> {
   }
   const sender = pc?.getSenders().find((s) => s.track?.kind === 'video')
   if (!sender) {
-    showNotice('当前没有视频通道，无法共享屏幕')
+    setStatus('当前没有视频通道，无法共享屏幕', 'error')
     return
   }
   try {
@@ -320,6 +512,10 @@ async function stopShare(): Promise<void> {
 
 /** 结束通话并复位状态；notifyPeer 决定是否通知对端（被动结束时不再回发 bye） */
 function endCall(reason = '', notifyPeer = true): void {
+  logDiagnostic(
+    'call.end',
+    `reason=${reason || 'local_hangup'} notify=${notifyPeer} phase=${phase.value} mode=${callMode ?? 'unknown'}`,
+  )
   const wasConnected = phase.value === 'connected'
   const status = wasConnected ? 'completed' : reason ? 'failed' : 'cancelled'
   recordCall(status, reason)
@@ -330,12 +526,25 @@ function endCall(reason = '', notifyPeer = true): void {
   }
   lanSetBusy(false)
   window.clearTimeout(disconnectTimer)
+  window.clearTimeout(connectionTimer)
+  // 房间码模式下通知对端本端已挂断（P2 修复）：此前对端只能等 ICE disconnected 3s 兜底
+  if (notifyPeer && signal && signalRoom.value) {
+    try {
+      signal.send({ action: 'bye' })
+    } catch {
+      // 信令连接可能已断开，对端走 ICE 超时兜底
+    }
+  }
   try {
     pc?.close()
   } catch {
     // 连接可能已经关闭
   }
   pc = null
+  signalOff?.()
+  signalOff = null
+  signal?.close()
+  signal = null
   channel = null
   savedVideoSender = null
   localStream.value?.getTracks().forEach((t) => t.stop())
@@ -346,17 +555,20 @@ function endCall(reason = '', notifyPeer = true): void {
   sharing.value = false
   inviteCode.value = ''
   replyCode.value = ''
+  roomCode.value = ''
+  signalRoom.value = ''
   chatMessages.value = []
   peerName.value = '对方'
   role.value = null
   phase.value = 'idle'
-  phaseDetail.value = ''
   panel.value = 'none'
   lanPeerId.value = ''
   lanCallId.value = ''
   sasCode.value = ''
   sasVerified.value = false
-  if (reason) showNotice(reason)
+  resetIceBuffer()
+  if (reason) setStatus(reason, status === 'failed' ? 'error' : 'info')
+  else statusMessage.value = ''
 }
 
 function hangup(): void {
@@ -412,7 +624,7 @@ async function pasteFromClipboard(): Promise<string> {
 }
 
 /**
- * 窗口聚焦时检测剪贴板中的邀请码（仅桌面端启用监听）。
+ * 启动时检测一次剪贴板中的邀请码（仅桌面端，不做持续监听）。
  * 主叫等待自己邀请码被复制时不会误触发（role 已非空）。
  */
 async function checkClipboardInvite(): Promise<void> {
@@ -432,7 +644,7 @@ async function joinDetected(): Promise<void> {
   try {
     await joinWithInvite(code)
   } catch (e) {
-    showNotice(e instanceof Error ? e.message : '邀请码无法解析')
+    setStatus(e instanceof Error ? e.message : '邀请码无法解析', 'error')
   }
 }
 
@@ -456,16 +668,16 @@ async function initLan(): Promise<void> {
       logDiagnostic('lan.init.skip', 'bindings unavailable', 'warn')
       return
     }
-	try {
-		const info = await api.Info()
-		if (info?.name) {
-			selfName.value = info.name
-			localStorage.setItem('mv:name', info.name)
-		}
-		selfIPs.value = (info?.ips as string[]) ?? []
-	} catch {
-		// Info 失败不影响事件订阅
-	}
+    try {
+      const info = await api.Info()
+      if (info?.name) {
+        selfName.value = info.name
+        localStorage.setItem('mv:name', info.name)
+      }
+      selfIPs.value = (info?.ips as string[]) ?? []
+    } catch {
+      // Info 失败不影响事件订阅
+    }
     lanReady.value = true
     lanStatus.value = 'ready'
   rt.Events.On('lan:peers', (ev: unknown) => {
@@ -505,10 +717,7 @@ async function initLan(): Promise<void> {
       endCall('对方已挂断', false)
     }
   })
-  // 桌面端：切回窗口时自动检测剪贴板中的邀请码
-  window.addEventListener('focus', () => {
-    void checkClipboardInvite()
-  })
+  // 桌面端：仅启动时检测一次剪贴板邀请码（不做持续监听，之后用「从剪贴板填充」按钮）
   void checkClipboardInvite()
   } catch (e) {
     lanStatus.value = 'error: ' + (e instanceof Error ? e.message : String(e))
@@ -536,6 +745,7 @@ async function startLanCall(peer: LanPeer): Promise<void> {
     const api = await loadLan()
     if (!api) throw new Error('桌面端不可用')
     await api.SendOffer(peer.id, lanCallId.value, p.localDescription!.sdp)
+    startConnectionTimer(WEBRTC_CONNECT_TIMEOUT_MS, 'lan-offer-sent')
     logDiagnostic('lan.offer.sent', `peer=${peer.id} sdpBytes=${p.localDescription?.sdp.length ?? 0}`)
   } catch (e) {
     logDiagnostic('lan.offer.error', e instanceof Error ? e.message : String(e), 'error')
@@ -576,6 +786,7 @@ async function acceptLanCall(): Promise<void> {
   }
   try {
     await api.AcceptCall(inc.from, inc.callId, p!.localDescription!.sdp)
+    startConnectionTimer(WEBRTC_CONNECT_TIMEOUT_MS, 'lan-answer-sent')
     logDiagnostic('lan.answer.sent', `peer=${inc.from} sdpBytes=${p!.localDescription?.sdp.length ?? 0}`)
   } catch (e) {
     logDiagnostic('lan.answer.send.error', e instanceof Error ? e.message : String(e), 'error')
@@ -598,6 +809,7 @@ async function handleLanAnswer(callId: string, sdp: string): Promise<void> {
   if (!callId || callId !== lanCallId.value || !pc) return
   try {
     await pc.setRemoteDescription({ type: 'answer', sdp })
+    startConnectionTimer(WEBRTC_CONNECT_TIMEOUT_MS, 'lan-answer-received')
     logDiagnostic('lan.answer.received', `sdpBytes=${sdp.length}`)
   } catch (e) {
     logDiagnostic('lan.answer.parse.error', e instanceof Error ? e.message : String(e), 'error')
@@ -615,7 +827,8 @@ function handleLanEnd(callId: string | undefined, reason: string): void {
 /** 全局唯一的通话 store（reactive 包装使模板中可直接读写） */
 export const call = reactive({
   phase,
-  phaseDetail,
+  statusMessage,
+  statusTone,
   role,
   inCall,
   participants,
@@ -627,7 +840,8 @@ export const call = reactive({
   sharing,
   inviteCode,
   replyCode,
-  notice,
+  roomCode,
+  signalRoom,
   panel,
   peerName,
   selfName,
@@ -659,6 +873,7 @@ export const call = reactive({
   sendChat,
   setName,
   setNetworkSettings,
+  setStatus,
 })
 
 export type CallStore = typeof call

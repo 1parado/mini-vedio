@@ -30,6 +30,11 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "signal" {
+		allocServeConsole()
+		if err := runSignal(os.Args[2:]); err != nil { log.Fatal(err) }
+		return
+	}
 
 	device, err := loadDevice()
 	if err != nil {

@@ -12,11 +12,13 @@ const call = useCall()
 const showSettings = ref(false)
 const showHelp = ref(false)
 const nameDraft = ref(call.selfName)
+const ipDraft = ref('')
 const networkDraft = ref<NetworkSettings>({
   stunUrls: [...call.networkSettings.stunUrls],
   turnUrl: call.networkSettings.turnUrl,
   turnUsername: call.networkSettings.turnUsername,
   turnCredential: call.networkSettings.turnCredential,
+  signalUrl: call.networkSettings.signalUrl,
 })
 const stunText = ref(networkDraft.value.stunUrls.join('\n'))
 
@@ -30,7 +32,19 @@ function saveNetwork(): void {
     turnUrl: networkDraft.value.turnUrl,
     turnUsername: networkDraft.value.turnUsername,
     turnCredential: networkDraft.value.turnCredential,
+    signalUrl: networkDraft.value.signalUrl,
   })
+}
+
+async function connectIp(): Promise<void> {
+  const ip = ipDraft.value.trim()
+  if (!ip) return
+  try {
+    await call.connectIP(ip)
+    ipDraft.value = ''
+  } catch (e) {
+    call.setStatus(e instanceof Error ? e.message : '连接失败', 'error')
+  }
 }
 </script>
 
@@ -78,15 +92,37 @@ function saveNetwork(): void {
           @change="saveName"
         />
         <p class="mt-2 text-[11px] text-ink-3">对方将在通话中看到此名称</p>
-        <label class="mt-4 block text-xs text-ink-2" for="stun-urls">STUN 地址（每行一个）</label>
+        <details class="mt-4 border-t border-line pt-3">
+          <summary class="cursor-pointer select-none text-xs font-medium text-ink-2">高级设置</summary>
+          <label class="mt-4 block text-xs text-ink-2" for="stun-urls">STUN 地址（每行一个）</label>
         <textarea id="stun-urls" v-model="stunText" class="mt-2 h-16 w-full resize-none rounded-lg border border-line px-3 py-2 font-mono text-[11px] outline-none focus:border-ink-3" @change="saveNetwork" />
-        <label class="mt-3 block text-xs text-ink-2" for="turn-url">TURN 地址（可选）</label>
+          <label class="mt-3 block text-xs text-ink-2" for="turn-url">TURN 地址（可选）</label>
         <input id="turn-url" v-model="networkDraft.turnUrl" placeholder="turn:turn.example.com:3478" class="mt-2 h-9 w-full rounded-lg border border-line px-3 font-mono text-[11px] outline-none focus:border-ink-3" @change="saveNetwork" />
         <div class="mt-2 flex gap-2">
           <input v-model="networkDraft.turnUsername" placeholder="TURN 用户名" class="h-9 min-w-0 flex-1 rounded-lg border border-line px-3 text-xs outline-none focus:border-ink-3" @change="saveNetwork" />
           <input v-model="networkDraft.turnCredential" type="password" placeholder="密码" class="h-9 min-w-0 flex-1 rounded-lg border border-line px-3 text-xs outline-none focus:border-ink-3" @change="saveNetwork" />
         </div>
         <p class="mt-2 text-[11px] text-ink-3">网络配置只在下一通话建立时生效。TURN 密码仅保存在当前应用会话，不会写入持久化设置。</p>
+        <label class="mt-4 block text-xs text-ink-2" for="direct-ip">IP 直连（局域网搜索失效时）</label>
+        <div class="mt-2 flex gap-2">
+          <input
+            id="direct-ip"
+            v-model="ipDraft"
+            placeholder="192.168.1.23"
+            class="h-9 min-w-0 flex-1 rounded-lg border border-line px-3 font-mono text-[11px] outline-none placeholder:text-ink-3 focus:border-ink-3"
+            @keydown.enter.prevent="connectIp"
+          />
+          <button
+            class="h-9 shrink-0 rounded-lg border border-line px-3 text-xs text-ink-2 transition-colors duration-150 hover:bg-hover"
+            @click="connectIp"
+          >
+            连接
+          </button>
+        </div>
+        <label class="mt-3 block text-xs text-ink-2" for="signal-url">信令服务器地址（可选）</label>
+        <input id="signal-url" v-model="networkDraft.signalUrl" placeholder="留空使用内置公共中继" class="mt-2 h-9 w-full rounded-lg border border-line px-3 font-mono text-[11px] outline-none focus:border-ink-3" @change="saveNetwork" />
+        <p class="mt-1 text-[11px] text-ink-3">留空走免注册的公共中继（房间码即通）；自建时填 wss://example.com/ws。</p>
+        </details>
       </div>
     </Transition>
     <Transition name="pop">
@@ -96,7 +132,7 @@ function saveNetwork(): void {
       >
         <p class="text-sm text-ink">mini-vedio 0.1.0</p>
         <p class="mt-1 text-xs leading-relaxed text-ink-3">
-          点对点加密通话（WebRTC DTLS-SRTP），通过邀请码与对方直连。
+          点对点加密通话（WebRTC DTLS-SRTP），支持局域网、房间码和邀请码连接。
         </p>
         <template v-if="call.selfIPs.length">
           <p class="mt-3 text-xs text-ink-2">本机 IP（局域网）</p>

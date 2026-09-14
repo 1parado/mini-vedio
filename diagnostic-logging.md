@@ -16,7 +16,13 @@
 - `invite.encode` / `invite.decode.ok`：邀请码生成和解析长度、类型。
 - `invite.decode.reject`：Base64、压缩、JSON 或 payload 阶段的失败原因。
 - `webrtc.peer.create`、`webrtc.ice.connected`、`webrtc.ice.failed`：WebRTC 建连阶段。
+- `webrtc.ice.buffered` / `webrtc.ice.replay` / `webrtc.ice.apply.error`：远端 ICE 候选在远端描述就绪前的缓冲与回放（候选乱序丢弃缺陷的防护路径）。
 - `lan.offer`、`lan.answer`、`lan.event`：局域网信令摘要。
+- `signal.connect.*`、`signal.message.reject`：自建信令服务器 WSS 连接和信令消息摘要。
+- `signal.send`：客户端发送的 offer/answer/ICE/bye 类型（不含载荷正文）。
+- `relay.connect.ok` / `relay.connect.fail` / `relay.connect.close`：公共中继（MQTT over WSS）broker 连接状态，含 broker 域名。
+- `relay.subscribe`、`relay.publish`、`relay.message`：公共中继的房间订阅、载荷长度与消息类型摘要（不含 SDP/ICE 正文）。
+- `relay.join.retry`：加入广播重发（对端订阅完成前的在途竞态兜底）。
 - `media.request`、`media.video.failed`、`media.audio.failed`：采集权限和设备问题。
 
 ## 邀请码格式

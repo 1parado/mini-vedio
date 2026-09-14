@@ -52,8 +52,8 @@
 | 前端 | Vue 3 + TypeScript + Vite + Tailwind CSS v4 + lucide-vue-next（用户指定） | 组件化与类型安全；构建产物 `frontend/dist/` 由 Wails 内嵌；已 PWA 化（manifest + SW + 图标，见 §4.4），浏览器端可安装为应用并支持 TWA 打包 APK |
 | NAT 穿透 | 公共 STUN（默认，可配置）+ 可选 TURN（设置页填写） | 覆盖大多数场景；TURN 兜底对称 NAT |
 | 局域网发现 | UDP 广播（JSON 心跳报文） | 无服务器、双击即见对方 |
-| 信令 | ① LAN UDP 单播 ② 邀请码（带外人工传递） ③ 可选 `signal` 服务器模式（同一个 exe） | 三种模式共用一套 `SignalMessage` JSON 格式 |
-| WebSocket 库（仅模式③用） | `github.com/coder/websocket` | 唯一的非标准库网络依赖，体积影响 < 1 MB |
+| 信令 | ① LAN UDP 单播 ② 房间码（默认：内置公共 MQTT 中继，无需自己的服务器；或自建 `signal` 服务器） ③ 邀请码（带外人工传递，中继不可达时自动回退） | 三种模式共用一套 `SignalMessage` JSON 格式 |
+| WebSocket 库（仅自建 signal 服务器用） | `github.com/coder/websocket` | 唯一的非标准库网络依赖，体积影响 < 1 MB；公共中继在前端手写 MQTT over WSS 报文，零依赖 |
 | 压缩（邀请码用） | `compress/flate` | 标准库，零依赖 |
 
 > **核心架构决策——媒体引擎不在 Go 里实现。**
@@ -116,15 +116,15 @@ Wails v3（Beta）若出现阻塞性 bug：回退 **Wails v2**（长期稳定版
 - 媒体：前端 `RTCPeerConnection` 与对端直连，Go 不碰任何媒体数据。
 - 信令：只搬运 SDP/ICE 文本；信令通道即使被窃听也不破坏媒体机密性（身份防伪靠 §6 SAS）。
 
-### 5.1 三种连接模式（同一套 `SignalMessage` JSON）
+### 5.1 连接模式（同一套 `SignalMessage` JSON）
 
 | 模式 | 场景 | 机制 |
 |---|---|---|
 | 局域网 | 同网段，零配置 | UDP 逐网卡定向广播 `:47824`（多网卡/VPN 下不再走错出口）互相发现 → 单播交换 offer/answer → 用主机候选直连，无需 STUN；跨网段/AP 隔离时可用「IP 直连」单播兜底 |
-| 邀请码 | 跨网络 | 非 trickle ICE：等候选收集完成 → 整包 SDP flate 压缩 + base64url → `MV1-OFFER:…` / `MV1-ANSWER:…` 二段式互换 → 经公共 STUN 直连 |
-| 信号服务器（可选） | 双方可上网且有人自建中转 | 同一 exe 加 `signal` 子命令即变成转发服务器（wss，无持久化、无账号）；客户端在设置页填 wss 地址 |
+| 短房间码（默认推荐） | 双方可上公共互联网 | 「创建新通话」生成 6 位房间码（首字符编码 broker：A=emqx、B=hivemq，双方确定性落同一台 broker），trickle ICE 自动交换 SDP/ICE。默认经免注册的**公共 MQTT 中继**（wss，前端 `relay.ts` 手写 MQTT 3.1.1 报文，零依赖）；也可在设置页填自建 `signal` 服务器地址（同一 exe 加 `signal` 子命令即变成 WSS 中继，内存房间 30 分钟过期）。挂断经 `bye` 信令即时通知对端 |
+| 邀请码（备用） | 公共中继不可达 / 完全离线 | 非 trickle ICE：等候选收集完成 → 整包 SDP flate 压缩 + base64url → `MV1-OFFER:…` / `MV1-ANSWER:…` 二段式互换；公共中继建连失败时自动切换到此模式 |
 
-- 默认 STUN：`stun.l.google.com:19302`、`stun.cloudflare.com:3478`（设置页可改）。
+- 默认 STUN：`stun.l.google.com:19302`、`stun.cloudflare.com:3478`（设置页可改）；人工交换房间信息最多等待 30 分钟，双方 SDP 就绪后 WebRTC 建连最多等待 120 秒。
 - 连接失败必须给可读的分类提示：ICE failed → 提示"可能被 AP 隔离或对称 NAT，改用邀请码或配置 TURN"。
 
 ## 6. 安全设计（验收必查项）
@@ -136,7 +136,8 @@ Wails v3（Beta）若出现阻塞性 bug：回退 **Wails v2**（长期稳定版
 | 权限最小化 | Wails `Permissions` 显式配置：`Camera`、`Microphone` = Allow（请求只可能来自应用自身内嵌页面）；未列出的能力走 WebView2 原生提示。采集权限仅在进入通话界面时申请 |
 | 页面来源唯一 | 前端资源 `go:embed` 内嵌，仅加载自有来源；CSP：`default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'`；不加载任何远程内容 |
 | 发布版加固 | release 构建禁用 devtools 与右键菜单；代码零遥测、零统计 |
-| 邀请码使用守则 | README 告知用户：邀请码只私聊发给通话对象；泄露邀请码不等于被窃听（有 SAS 兜底），但可能被陌生人呼叫 |
+| 邀请码使用守则 | README 告知用户：邀请码/房间码只私聊发给通话对象；泄露邀请码不等于被窃听（有 SAS 兜底），但可能被陌生人呼叫 |
+| 公共中继的信任边界 | 公共 MQTT broker 只搬运 SDP/ICE 文本（不接触媒体），broker 运营方可见连接信息不破坏媒体机密性（DTLS-SRTP 端到端）；身份防伪由 SAS 核对码兜底；日志不记录 SDP/ICE 正文 |
 | 隐私 | 通话记录与联系人仅存前端本地存储；诊断日志存 `%APPDATA%\mini-vedio\diagnostics.jsonl`（2 MB 轮转并限频）；TURN 凭据仅保留当前会话 |
 
 ### 6.1 诊断日志要求（所有新增功能必须遵守）
@@ -162,6 +163,7 @@ mini-vedio/
 ├── device.go            # 设备标识持久化（%APPDATA%\mini-vedio\device.json）
 ├── lanservice.go        # 绑定服务：Peers/SendOffer/AcceptCall/… + 事件转发前端
 ├── serve.go             # serve 子命令：自签 HTTPS 网页入口（手机浏览器跨网测试用）
+├── signal.go            # signal 子命令：临时 WSS 房间码和 SDP/ICE 内存中继（自建信令用）
 ├── internal/lan/        # UDP 广播发现 + 信令中继（纯标准库，含双 Hub 集成测试）
 ├── bindings/            # wails3 generate bindings 产物（前端 import，勿手改）
 ├── cmd/genicon/         # 构建期图标生成器（由 icon.svg 光栅化出 ICO/PNG，零依赖）
@@ -171,7 +173,7 @@ mini-vedio/
 ├── build/windows/       # icon.svg（设计源）/ icon.ico / icon.png
 ├── frontend/            # Vue 3 + Vite 前端（node_modules 仅限此目录）
 │   ├── src/components/  # 通话、记录、联系人、PeerList、IncomingCall 与移动端导航
-│   ├── src/services/    # call.ts（状态机）/ invite.ts / diagnostics.ts / history.ts / contacts.ts
+│   ├── src/services/    # call.ts（状态机）/ signal.ts（自建信令）/ relay.ts（公共 MQTT 中继）/ invite.ts / diagnostics.ts / history.ts / contacts.ts
 │   ├── public/          # PWA 资源（manifest.webmanifest / sw.js / icons/），genicon 同步生成图标
 │   └── dist/            # 构建产物，go:embed 内嵌
 └── bin/                 # 构建输出 mini-vedio.exe
@@ -203,7 +205,7 @@ wails3 generate bindings -clean -d bindings
 - [ ] `-ldflags "-s -w" -trimpath` 生效
 - [ ] 前端资源已 `go:embed`，无外部文件依赖
 - [ ] 未引入 UPX（默认禁用：未签名 exe 加壳会大幅提高杀软误报率；仅实验对比时手动用）
-- [ ] 体积断言通过：构建产物 ≤ 12 MB
+- [ ] 体积断言通过：构建产物 ≤ 13 MB（scripts\build.ps1 默认断言）
 - [ ] §8.3 体积记录表已更新
 
 ### 8.3 体积记录（M0 起维护，防回归）
@@ -212,6 +214,7 @@ wails3 generate bindings -clean -d bindings
 |---|---|---|
 | M0–M4（Wails beta.16 + 完整前端 + LAN 服务 + 诊断日志） | 12.29 MB | `-ldflags "-s -w" -trimpath`，达标 ≤13 MB |
 | PWA 化（manifest/SW/icons 内嵌，2026-09-05） | 12.31 MB | 增量约 57 KB（图标+SW+manifest），达标 |
+| 房间码默认化：公共 MQTT 中继 + ICE 缓冲 + bye（2026-09-14） | 12.46 MB | 增量约 150 KB（relay.ts 编译产物 + bye 处理），达标 ≤13 MB |
 
 ## 9. 里程碑（严格按序，M0 优先消灭最大技术风险）
 
@@ -249,7 +252,8 @@ Backlog（M4 之后，勿提前实现）：DataChannel 文件传输、多方 mes
 >   SW 仅浏览器安全上下文注册（桌面路径零影响）；vite base 改相对路径；exe 12.29→12.31 MB。
 >   移动端路线定为 PWA + TWA（§4.4），安卓打包文档见 docs/android-packaging.md；APK 实际构建
 >   待前端托管到 HTTPS 后由 PWABuilder 完成。
-> - 剩余：跨设备真机实测（局域网 + 跨网）、signal 中继模式（对称 NAT 兜底）、代码签名（可选）。
+> - 2026-09-14 连接便利性专项：① **公共中继房间码模式成为默认**——创建即得 6 位房间码（首字符编码 broker 防分叉），公共 MQTT 中继（前端手写 MQTT over WSS，零依赖）免自建服务器，失败自动回退邀请码；② 修复 signal 模式 **ICE 候选乱序丢失**（远端描述就绪前缓冲、就绪后回放）；③ signal 中继与公共中继均支持 **bye 挂断通知**（对端即时结束，不再等 3s ICE 超时）；④ signal 模式补齐 lanSetBusy 与诊断日志事件（relay.*）。
+> - 剩余：跨设备真机实测（局域网 + 跨网）、代码签名（可选）。
 
 ## 10. 测试矩阵（M4 验收）
 

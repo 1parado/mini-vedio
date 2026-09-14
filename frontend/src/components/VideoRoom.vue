@@ -58,7 +58,7 @@ function resetPanelWidth(): void {
 
 // 等待交换邀请码的阶段：发起方在 idle 时展示邀请码，加入方在回传回复码前一直展示
 const waiting = computed(
-  () => (call.phase === 'idle' && !!call.inviteCode) || !!call.replyCode,
+  () => !!call.roomCode || (call.phase === 'idle' && !!call.inviteCode) || !!call.replyCode,
 )
 
 // 等待时点"放大自己"会自动收起邀请码浮层；顶部小按钮可召回
@@ -92,14 +92,12 @@ async function copy(text: string, which: 'invite' | 'reply'): Promise<void> {
 }
 
 const answer = ref('')
-const answerError = ref('')
 async function submitAnswer(): Promise<void> {
-  answerError.value = ''
   try {
     await call.acceptReplyCode(answer.value)
     answer.value = ''
   } catch (e) {
-    answerError.value = e instanceof Error ? e.message : '回复码无法解析'
+    call.setStatus(e instanceof Error ? e.message : '回复码无法解析', 'error')
   }
 }
 </script>
@@ -126,7 +124,25 @@ async function submitAnswer(): Promise<void> {
     <!-- 等待交换邀请码 -->
     <div v-else class="absolute inset-0 flex items-center justify-center p-4">
       <div class="w-full max-w-md rounded-2xl bg-white p-5 shadow-float">
-        <template v-if="call.inviteCode">
+        <template v-if="call.roomCode && call.role === 'caller'">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-medium text-ink">把房间码发给对方</h2>
+            <button class="inline-flex h-8 items-center gap-1.5 rounded-full border border-line px-3 text-xs text-ink-2 transition-colors duration-150 hover:bg-hover" @click="copy(call.roomCode, 'invite')">
+              <Check v-if="copied === 'invite'" :size="13" class="text-ok" />
+              <Copy v-else :size="13" />
+              {{ copied === 'invite' ? '已复制' : '复制' }}
+            </button>
+          </div>
+          <p class="mt-1 text-xs text-ink-3">对方输入此房间码后，双方会自动交换连接信息。</p>
+          <div class="mt-5 rounded-xl bg-[#fafafa] px-4 py-5 text-center font-mono text-3xl font-semibold tracking-[0.25em] text-ink">{{ call.roomCode }}</div>
+          <p class="mt-3 text-center text-xs text-ink-3">正在等待对方加入，连接等待时间已延长。</p>
+        </template>
+        <template v-else-if="call.roomCode">
+          <h2 class="text-sm font-medium text-ink">正在加入房间</h2>
+          <p class="mt-2 text-xs text-ink-3">房间码 {{ call.roomCode }}，正在等待对方发送连接信息。</p>
+          <div class="mt-5 flex items-center justify-center gap-2 text-sm text-ink-2"><span class="size-2 animate-pulse rounded-full bg-accent" />正在连接…</div>
+        </template>
+        <template v-else-if="call.inviteCode">
           <div class="flex items-center justify-between">
             <h2 class="text-sm font-medium text-ink">① 把邀请码发给对方</h2>
             <button
@@ -172,7 +188,6 @@ async function submitAnswer(): Promise<void> {
                 连接
               </button>
             </div>
-            <p v-if="answerError" class="mt-2 text-xs text-danger">{{ answerError }}</p>
           </div>
         </template>
 

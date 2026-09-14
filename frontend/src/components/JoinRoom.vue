@@ -6,7 +6,6 @@ import { useCall } from '../services/call'
 
 const call = useCall()
 const code = ref('')
-const error = ref('')
 const busy = ref(false)
 
 /** 从剪贴板填充邀请码（浏览器端首次点击会请求剪贴板权限） */
@@ -24,11 +23,10 @@ async function joinDetected(): Promise<void> {
 async function join(): Promise<void> {
   if (!code.value.trim() || busy.value) return
   busy.value = true
-  error.value = ''
   try {
     await call.joinWithInvite(code.value)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '邀请码无法解析'
+    call.setStatus(e instanceof Error ? e.message : '邀请码无法解析', 'error')
   } finally {
     busy.value = false
   }
@@ -37,11 +35,10 @@ async function join(): Promise<void> {
 async function create(): Promise<void> {
   if (busy.value) return
   busy.value = true
-  error.value = ''
   try {
     await call.createCall()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '创建通话失败'
+    call.setStatus(e instanceof Error ? e.message : '创建通话失败', 'error')
   } finally {
     busy.value = false
   }
@@ -53,7 +50,15 @@ async function create(): Promise<void> {
     <h1 class="text-center text-3xl font-semibold tracking-tight text-ink md:text-4xl">
       准备开始通话？
     </h1>
-    <p class="mt-3 text-sm text-ink-2">粘贴邀请码加入通话，或创建一通新通话。</p>
+    <Transition name="pop">
+      <p
+        v-if="call.statusMessage"
+        class="mt-5 max-w-xl rounded-lg px-4 py-2.5 text-center text-xs"
+        :class="call.statusTone === 'error' ? 'bg-red-50 text-danger' : 'bg-hover text-ink-2'"
+      >
+        {{ call.statusMessage }}
+      </p>
+    </Transition>
 
     <div
       v-if="call.detectedInvite"
@@ -104,11 +109,10 @@ async function create(): Promise<void> {
           <ArrowRight :size="18" />
         </button>
       </div>
-      <p v-if="error" class="mt-3 text-center text-sm text-danger">{{ error }}</p>
     </form>
 
     <button
-      class="mt-6 inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink"
+      class="mt-6 inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink disabled:opacity-40"
       :disabled="busy"
       @click="create"
     >
@@ -117,6 +121,19 @@ async function create(): Promise<void> {
     </button>
 
     <PeerList />
-    <p v-if="call.notice" class="mt-4 text-xs text-ink-3">{{ call.notice }}</p>
   </section>
 </template>
+
+<style scoped>
+.pop-enter-active,
+.pop-leave-active {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+.pop-enter-from,
+.pop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+</style>

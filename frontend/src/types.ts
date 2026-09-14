@@ -21,7 +21,7 @@ export type CallRecordStatus = 'completed' | 'failed' | 'cancelled'
 export interface CallRecord {
   id: string
   peerName: string
-  mode: 'invite' | 'lan'
+  mode: 'invite' | 'lan' | 'signal'
   status: CallRecordStatus
   startedAt: string
   endedAt: string

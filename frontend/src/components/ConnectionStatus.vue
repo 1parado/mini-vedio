@@ -5,7 +5,7 @@ import { useCall } from '../services/call'
 
 const call = useCall()
 const show = computed(
-  () => call.phase !== 'idle' || !call.micOn || !call.camOn || !!call.notice,
+  () => call.phase !== 'idle' || !call.micOn || !call.camOn || !!call.statusMessage,
 )
 </script>
 
@@ -27,7 +27,7 @@ const show = computed(
       v-else-if="call.phase === 'failed'"
       class="flex h-8 items-center gap-2 rounded-full bg-black/40 px-3.5 text-xs text-red-300"
     >
-      连接失败<span v-if="call.phaseDetail" class="text-white/50">· {{ call.phaseDetail }}</span>
+      连接失败
     </div>
     <button
       v-if="call.phase === 'connected' && call.sasCode"
@@ -41,10 +41,11 @@ const show = computed(
       {{ call.sasCode }}
     </button>
     <div
-      v-if="call.notice"
-      class="flex h-8 items-center rounded-full bg-black/40 px-3.5 text-xs text-white/80"
+      v-if="call.statusMessage"
+      class="flex h-8 items-center rounded-full bg-black/40 px-3.5 text-xs"
+      :class="call.statusTone === 'error' ? 'text-red-200' : 'text-white/80'"
     >
-      {{ call.notice }}
+      {{ call.statusMessage }}
     </div>
     <div
       v-if="!call.micOn"

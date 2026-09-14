@@ -1,5 +1,6 @@
 import type { InviteKind } from '../types'
 import { logDiagnostic } from './diagnostics'
+import { minifySdp } from './sdpmin'
 
 const PREFIX = 'MV1-'
 const MAX_CODE_LENGTH = 256 * 1024
@@ -74,9 +75,11 @@ async function inflate(data: Uint8Array): Promise<Uint8Array | null> {
   return output
 }
 
-/** 把 offer/answer SDP 编码为可复制的邀请码 */
+/** 把 offer/answer SDP 编码为可复制的邀请码（先精简再压缩，保证能过聊天工具的长度限制） */
 export async function encodeInvite(kind: InviteKind, sdp: string): Promise<string> {
-  const raw = new TextEncoder().encode(JSON.stringify({ t: kind, s: sdp }))
+  const minified = minifySdp(sdp)
+  logDiagnostic('sdp.minify', `kind=${kind} raw=${sdp.length} min=${minified.length}`)
+  const raw = new TextEncoder().encode(JSON.stringify({ t: kind, s: minified }))
   const packed = (await deflate(raw)) ?? raw
   const code = PREFIX + bytesToBase64url(packed)
   logDiagnostic('invite.encode', `kind=${kind} sdpBytes=${raw.length} codeBytes=${code.length}`)

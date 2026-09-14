@@ -3,6 +3,7 @@ export interface NetworkSettings {
   turnUrl: string
   turnUsername: string
   turnCredential: string
+  signalUrl: string
 }
 
 const STORAGE_KEY = 'mv:network-settings'
@@ -12,6 +13,7 @@ const DEFAULTS: NetworkSettings = {
   turnUrl: '',
   turnUsername: '',
   turnCredential: '',
+  signalUrl: '',
 }
 
 export function loadNetworkSettings(): NetworkSettings {
@@ -28,6 +30,7 @@ export function loadNetworkSettings(): NetworkSettings {
       turnUsername: typeof parsed.turnUsername === 'string' ? parsed.turnUsername : '',
       // TURN 密码不从持久化 localStorage 读取，只在本次应用会话中保留。
       turnCredential: sessionCredential,
+      signalUrl: typeof parsed.signalUrl === 'string' ? parsed.signalUrl.trim() : '',
     }
   } catch {
     return { ...DEFAULTS, stunUrls: [...DEFAULTS.stunUrls] }
@@ -40,6 +43,7 @@ export function saveNetworkSettings(settings: NetworkSettings): NetworkSettings 
     turnUrl: settings.turnUrl.trim(),
     turnUsername: settings.turnUsername.trim(),
     turnCredential: settings.turnCredential,
+    signalUrl: settings.signalUrl.trim(),
   }
   if (!normalized.stunUrls.length) normalized.stunUrls = [...DEFAULTS.stunUrls]
   try {
